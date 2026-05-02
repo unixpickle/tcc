@@ -9,7 +9,7 @@ import (
 )
 
 type ZoneInfo struct {
-	DeviceID                      int
+	DeviceID                      ZoneID
 	RuntimeStatusAvailable        bool
 	IsLost                        bool
 	GatewayIsLost                 bool
@@ -67,12 +67,12 @@ type ZoneInfo struct {
 }
 
 type zoneRuntimeStatus struct {
-	DeviceID              int  `json:"DeviceID"`
-	IsLost                bool `json:"IsLost"`
-	GatewayIsLost         bool `json:"GatewayIsLost"`
-	GatewayUpgrading      bool `json:"GatewayUpgrading"`
-	EquipmentOutputStatus int  `json:"EquipmentOutputStatus"`
-	IsFanRunning          bool `json:"IsFanRunning"`
+	DeviceID              ZoneID `json:"DeviceID"`
+	IsLost                bool   `json:"IsLost"`
+	GatewayIsLost         bool   `json:"GatewayIsLost"`
+	GatewayUpgrading      bool   `json:"GatewayUpgrading"`
+	EquipmentOutputStatus int    `json:"EquipmentOutputStatus"`
+	IsFanRunning          bool   `json:"IsFanRunning"`
 }
 
 var controlModelSetPattern = regexp.MustCompile(`(?s)Control\.Model\.set\(Control\.Model\.Property\.([A-Za-z0-9_]+),\s*(.*?)\);`)
@@ -84,9 +84,11 @@ func parseZoneInfo(r io.Reader) (*ZoneInfo, error) {
 	}
 	values := controlModelValues(string(data))
 	info := &ZoneInfo{}
-	if err := setInt(values, "deviceID", &info.DeviceID); err != nil {
+	var deviceID int
+	if err := setInt(values, "deviceID", &deviceID); err != nil {
 		return nil, err
 	}
+	info.DeviceID = ZoneID(deviceID)
 	if info.DeviceID == 0 {
 		return nil, fmt.Errorf("parse zone info: missing deviceID")
 	}

@@ -34,12 +34,14 @@ type Session struct {
 }
 
 type Zone struct {
-	ID          int
+	ID          ZoneID
 	Name        string
 	ControlURL  string
 	Temperature *float64
 	Humidity    *float64
 }
+
+type ZoneID int
 
 type SystemSwitch int
 
@@ -137,7 +139,7 @@ func (s *Session) RefreshZones() error {
 	return nil
 }
 
-func (s *Session) ZoneInfo(zoneID int) (*ZoneInfo, error) {
+func (s *Session) ZoneInfo(zoneID ZoneID) (*ZoneInfo, error) {
 	response, err := s.client.Get(fmt.Sprintf(defaultControlURL, zoneID))
 	if err != nil {
 		return nil, err
@@ -194,37 +196,37 @@ func (s *Session) populateZoneInfoRuntimeStatus(info *ZoneInfo) error {
 	return nil
 }
 
-func (s *Session) SetSystemSwitch(zoneID int, value SystemSwitch) error {
+func (s *Session) SetSystemSwitch(zoneID ZoneID, value SystemSwitch) error {
 	return s.SubmitControlChanges(zoneID, ControlChanges{SystemSwitch: &value})
 }
 
-func (s *Session) SetHeatSetpoint(zoneID int, temperature float64) error {
+func (s *Session) SetHeatSetpoint(zoneID ZoneID, temperature float64) error {
 	return s.SubmitControlChanges(zoneID, ControlChanges{HeatSetpoint: &temperature})
 }
 
-func (s *Session) SetCoolSetpoint(zoneID int, temperature float64) error {
+func (s *Session) SetCoolSetpoint(zoneID ZoneID, temperature float64) error {
 	return s.SubmitControlChanges(zoneID, ControlChanges{CoolSetpoint: &temperature})
 }
 
-func (s *Session) SetFanMode(zoneID int, value FanMode) error {
+func (s *Session) SetFanMode(zoneID ZoneID, value FanMode) error {
 	return s.SubmitControlChanges(zoneID, ControlChanges{FanMode: &value})
 }
 
-func (s *Session) SetHold(zoneID int, value HoldStatus) error {
+func (s *Session) SetHold(zoneID ZoneID, value HoldStatus) error {
 	return s.SubmitControlChanges(zoneID, ControlChanges{
 		StatusHeat: &value,
 		StatusCool: &value,
 	})
 }
 
-func (s *Session) SetNextPeriods(zoneID int, heatPeriod, coolPeriod Period) error {
+func (s *Session) SetNextPeriods(zoneID ZoneID, heatPeriod, coolPeriod Period) error {
 	return s.SubmitControlChanges(zoneID, ControlChanges{
 		HeatNextPeriod: &heatPeriod,
 		CoolNextPeriod: &coolPeriod,
 	})
 }
 
-func (s *Session) SetNextPeriodSetpoints(zoneID, heatSetpoint, coolSetpoint int) error {
+func (s *Session) SetNextPeriodSetpoints(zoneID ZoneID, heatSetpoint, coolSetpoint int) error {
 	heatPeriod, err := NewPeriod(heatSetpoint)
 	if err != nil {
 		return err
@@ -236,7 +238,7 @@ func (s *Session) SetNextPeriodSetpoints(zoneID, heatSetpoint, coolSetpoint int)
 	return s.SetNextPeriods(zoneID, heatPeriod, coolPeriod)
 }
 
-func (s *Session) SubmitControlChanges(zoneID int, changes ControlChanges) error {
+func (s *Session) SubmitControlChanges(zoneID ZoneID, changes ControlChanges) error {
 	if err := validatePeriodPointer("HeatNextPeriod", changes.HeatNextPeriod); err != nil {
 		return err
 	}
@@ -295,7 +297,7 @@ func checkResponseStatus(operation string, response *http.Response) error {
 }
 
 type controlScreenChanges struct {
-	DeviceID       int           `json:"DeviceID"`
+	DeviceID       ZoneID        `json:"DeviceID"`
 	SystemSwitch   *SystemSwitch `json:"SystemSwitch"`
 	HeatSetpoint   *float64      `json:"HeatSetpoint"`
 	CoolSetpoint   *float64      `json:"CoolSetpoint"`

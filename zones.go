@@ -40,7 +40,7 @@ func parseZoneRow(n *html.Node) (Zone, bool) {
 	if err != nil {
 		return Zone{}, false
 	}
-	zone.ID = parsedID
+	zone.ID = ZoneID(parsedID)
 	if controlURL, ok := attr(n, "data-url"); ok {
 		zone.ControlURL = absoluteURL(controlURL)
 	}
