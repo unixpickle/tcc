@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TCC Thermostats</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div>
+        <h1>Thermostats</h1>
+        <p id="status">Loading devices...</p>
+      </div>
+      <button id="refresh" type="button" aria-label="Refresh">Refresh</button>
+    </header>
+    <section id="devices" class="device-grid" aria-live="polite"></section>
+  </main>
+  <template id="device-template">
+    <article class="device">
+      <div class="device-header">
+        <div>
+          <h2></h2>
+          <p class="meta"></p>
+        </div>
+        <span class="run-state"></span>
+      </div>
+      <div class="temperature-row">
+        <div>
+          <span class="label">Current</span>
+          <strong class="current-temp"></strong>
+        </div>
+        <div>
+          <span class="label">Setpoint</span>
+          <div class="setpoint-control">
+            <button class="temp-down" type="button" aria-label="Lower temperature">-</button>
+            <input class="setpoint" type="number" step="1" inputmode="decimal" aria-label="Setpoint">
+            <button class="temp-up" type="button" aria-label="Raise temperature">+</button>
+          </div>
+        </div>
+      </div>
+      <div class="controls">
+        <label>
+          <span>System</span>
+          <select class="system"></select>
+        </label>
+        <label>
+          <span>Fan</span>
+          <select class="fan"></select>
+        </label>
+      </div>
+      <p class="message" role="status"></p>
+    </article>
+  </template>
+  <script src="app.js"></script>
+</body>
+</html>
