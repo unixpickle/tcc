@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/unixpickle/tcc"
 )
@@ -20,17 +21,24 @@ import (
 //go:embed static/*
 var staticFiles embed.FS
 
+const MinLoginInterval = 10 * time.Minute
+
 type session interface {
-	RefreshZones() error
-	Zones() []tcc.Zone
+	Zones() ([]tcc.Zone, error)
 	ZoneInfo(tcc.ZoneID) (*tcc.ZoneInfo, error)
 	SubmitControlChanges(tcc.ZoneID, tcc.ControlChanges) error
+	Relogin(username, password string) error
 }
 
 type Handler struct {
-	session session
-	mu      sync.Mutex
-	static  http.Handler
+	session  session
+	username string
+	password string
+	static   http.Handler
+
+	reauthMu         sync.Mutex
+	lastLoginAttempt time.Time
+	lastLoginErr     error
 }
 
 func main() {
@@ -55,7 +63,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	handler := mountRoot(newHandler(session), root)
+	handler := mountRoot(newHandler(session, username, password), root)
 	if root == "" {
 		log.Printf("serving TCC web UI at http://localhost%s/", displayAddr(*addr))
 	} else {
@@ -64,14 +72,16 @@ func main() {
 	log.Fatal(http.ListenAndServe(*addr, handler))
 }
 
-func newHandler(session session) http.Handler {
+func newHandler(session session, username, password string) http.Handler {
 	static, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		panic(err)
 	}
 	return &Handler{
-		session: session,
-		static:  http.FileServer(http.FS(static)),
+		session:  session,
+		username: username,
+		password: password,
+		static:   http.FileServer(http.FS(static)),
 	}
 }
 
@@ -154,15 +164,14 @@ func (h *Handler) serveAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) serveDevices(w http.ResponseWriter, r *http.Request) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if err := h.session.RefreshZones(); err != nil {
+	zones, err := h.zones()
+	if err != nil {
 		writeBackendError(w, err)
 		return
 	}
 	var devices []deviceResponse
-	for _, zone := range h.session.Zones() {
-		device, err := h.deviceResponseLocked(zone.ID)
+	for _, zone := range zones {
+		device, err := h.deviceResponse(zone.ID)
 		if err != nil {
 			writeBackendError(w, err)
 			return
@@ -180,14 +189,17 @@ func (h *Handler) serveDevice(w http.ResponseWriter, r *http.Request, idPart str
 	if !ok {
 		return
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	device, err := h.deviceResponseLocked(zoneID)
+	zones, err := h.zones()
 	if err != nil {
 		writeBackendError(w, err)
 		return
 	}
-	for _, zone := range h.session.Zones() {
+	device, err := h.deviceResponse(zoneID)
+	if err != nil {
+		writeBackendError(w, err)
+		return
+	}
+	for _, zone := range zones {
 		if zone.ID == zoneID {
 			device.Name = zone.Name
 			device.Temperature = zone.Temperature
@@ -210,9 +222,7 @@ func (h *Handler) serveSetTemperature(w http.ResponseWriter, r *http.Request, id
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	info, err := h.session.ZoneInfo(zoneID)
+	info, err := h.zoneInfo(zoneID)
 	if err != nil {
 		writeBackendError(w, err)
 		return
@@ -247,7 +257,7 @@ func (h *Handler) serveSetTemperature(w http.ResponseWriter, r *http.Request, id
 		writeError(w, http.StatusConflict, "temperature cannot be changed while the system is off")
 		return
 	}
-	h.submitAndWriteDeviceLocked(w, zoneID, changes)
+	h.submitAndWriteDevice(w, zoneID, changes)
 }
 
 func adjustedHeatSetpoint(info *tcc.ZoneInfo, coolSetpoint float64) (float64, bool) {
@@ -290,9 +300,7 @@ func (h *Handler) serveSetSystem(w http.ResponseWriter, r *http.Request, idPart 
 		return
 	}
 	hold := tcc.HoldPermanent
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.submitAndWriteDeviceLocked(w, zoneID, tcc.ControlChanges{
+	h.submitAndWriteDevice(w, zoneID, tcc.ControlChanges{
 		SystemSwitch: &system,
 		StatusHeat:   &hold,
 		StatusCool:   &hold,
@@ -316,21 +324,19 @@ func (h *Handler) serveSetFan(w http.ResponseWriter, r *http.Request, idPart str
 		return
 	}
 	hold := tcc.HoldPermanent
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.submitAndWriteDeviceLocked(w, zoneID, tcc.ControlChanges{
+	h.submitAndWriteDevice(w, zoneID, tcc.ControlChanges{
 		FanMode:    &fan,
 		StatusHeat: &hold,
 		StatusCool: &hold,
 	})
 }
 
-func (h *Handler) submitAndWriteDeviceLocked(w http.ResponseWriter, zoneID tcc.ZoneID, changes tcc.ControlChanges) {
-	if err := h.session.SubmitControlChanges(zoneID, changes); err != nil {
+func (h *Handler) submitAndWriteDevice(w http.ResponseWriter, zoneID tcc.ZoneID, changes tcc.ControlChanges) {
+	if err := h.submitControlChanges(zoneID, changes); err != nil {
 		writeBackendError(w, err)
 		return
 	}
-	device, err := h.deviceResponseLocked(zoneID)
+	device, err := h.deviceResponse(zoneID)
 	if err != nil {
 		writeBackendError(w, err)
 		return
@@ -338,12 +344,66 @@ func (h *Handler) submitAndWriteDeviceLocked(w http.ResponseWriter, zoneID tcc.Z
 	writeJSON(w, http.StatusOK, device)
 }
 
-func (h *Handler) deviceResponseLocked(zoneID tcc.ZoneID) (deviceResponse, error) {
-	info, err := h.session.ZoneInfo(zoneID)
+func (h *Handler) deviceResponse(zoneID tcc.ZoneID) (deviceResponse, error) {
+	info, err := h.zoneInfo(zoneID)
 	if err != nil {
 		return deviceResponse{}, err
 	}
 	return newDeviceResponse(info), nil
+}
+
+func (h *Handler) zones() ([]tcc.Zone, error) {
+	zones, err := h.session.Zones()
+	if err == nil {
+		return zones, nil
+	}
+	if err := h.maybeRelogin(err); err != nil {
+		return nil, err
+	}
+	return h.session.Zones()
+}
+
+func (h *Handler) zoneInfo(zoneID tcc.ZoneID) (*tcc.ZoneInfo, error) {
+	info, err := h.session.ZoneInfo(zoneID)
+	if err == nil {
+		return info, nil
+	}
+	if err := h.maybeRelogin(err); err != nil {
+		return nil, err
+	}
+	return h.session.ZoneInfo(zoneID)
+}
+
+func (h *Handler) submitControlChanges(zoneID tcc.ZoneID, changes tcc.ControlChanges) error {
+	err := h.session.SubmitControlChanges(zoneID, changes)
+	if err == nil {
+		return nil
+	}
+	if err := h.maybeRelogin(err); err != nil {
+		return err
+	}
+	return h.session.SubmitControlChanges(zoneID, changes)
+}
+
+func (h *Handler) maybeRelogin(err error) error {
+	if err == nil || !errors.Is(err, tcc.ErrUnauthorized) {
+		return err
+	}
+	h.reauthMu.Lock()
+	defer h.reauthMu.Unlock()
+	if time.Since(h.lastLoginAttempt) < MinLoginInterval {
+		if h.lastLoginErr == nil {
+			return nil
+		}
+		return err
+	}
+	h.lastLoginAttempt = time.Now()
+	if reloginErr := h.session.Relogin(h.username, h.password); reloginErr != nil {
+		h.lastLoginErr = reloginErr
+		return fmt.Errorf("relogin: %w", reloginErr)
+	}
+	h.lastLoginErr = nil
+	return nil
 }
 
 type devicesResponse struct {

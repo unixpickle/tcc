@@ -7,18 +7,22 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
-func TestRefreshZonesReturnsUnauthorizedError(t *testing.T) {
+func TestZonesReturnsUnauthorizedError(t *testing.T) {
 	session := &Session{
-		client: &http.Client{
-			Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-				return responseWithStatus(http.StatusUnauthorized), nil
-			}),
+		client: &sessionClient{
+			httpClient: &http.Client{
+				Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					return responseWithStatus(http.StatusUnauthorized), nil
+				}),
+				Timeout: defaultTimeout,
+			},
+			zonesURL: "https://mytotalconnectcomfort.com/portal/1000000/Zones",
 		},
-		zonesURL: "https://mytotalconnectcomfort.com/portal/1000000/Zones",
 	}
-	err := session.RefreshZones()
+	_, err := session.Zones()
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("expected ErrUnauthorized; got %v", err)
 	}
@@ -29,10 +33,13 @@ func TestRefreshZonesReturnsUnauthorizedError(t *testing.T) {
 
 func TestSubmitControlChangesReturnsUnauthorizedError(t *testing.T) {
 	session := &Session{
-		client: &http.Client{
-			Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-				return responseWithStatus(http.StatusUnauthorized), nil
-			}),
+		client: &sessionClient{
+			httpClient: &http.Client{
+				Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					return responseWithStatus(http.StatusUnauthorized), nil
+				}),
+				Timeout: defaultTimeout,
+			},
 		},
 	}
 	err := session.SetCoolSetpoint(1000001, 68)
@@ -47,11 +54,14 @@ func TestSubmitControlChangesReturnsUnauthorizedError(t *testing.T) {
 func TestSubmitControlChangesRejectsInvalidPeriod(t *testing.T) {
 	period := Period(PeriodsPerDay)
 	session := &Session{
-		client: &http.Client{
-			Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-				t.Fatal("unexpected HTTP request")
-				return nil, nil
-			}),
+		client: &sessionClient{
+			httpClient: &http.Client{
+				Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					t.Fatal("unexpected HTTP request")
+					return nil, nil
+				}),
+				Timeout: defaultTimeout,
+			},
 		},
 	}
 	err := session.SubmitControlChanges(1000001, ControlChanges{HeatNextPeriod: &period})
@@ -62,10 +72,13 @@ func TestSubmitControlChangesRejectsInvalidPeriod(t *testing.T) {
 
 func TestZoneInfoReturnsUnauthorizedError(t *testing.T) {
 	session := &Session{
-		client: &http.Client{
-			Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-				return responseWithStatus(http.StatusUnauthorized), nil
-			}),
+		client: &sessionClient{
+			httpClient: &http.Client{
+				Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					return responseWithStatus(http.StatusUnauthorized), nil
+				}),
+				Timeout: defaultTimeout,
+			},
 		},
 	}
 	_, err := session.ZoneInfo(1000001)
@@ -80,18 +93,21 @@ func TestZoneInfoReturnsUnauthorizedError(t *testing.T) {
 func TestZoneInfoFetchesControlPage(t *testing.T) {
 	var requestURL *url.URL
 	session := &Session{
-		client: &http.Client{
-			Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-				requestURL = request.URL
-				response := responseWithStatus(http.StatusOK)
-				response.Body = io.NopCloser(strings.NewReader(`
+		client: &sessionClient{
+			httpClient: &http.Client{
+				Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					requestURL = request.URL
+					response := responseWithStatus(http.StatusOK)
+					response.Body = io.NopCloser(strings.NewReader(`
 Control.Model.set(Control.Model.Property.deviceID, 1000001);
 Control.Model.set(Control.Model.Property.systemSwitchPosition, 1);
 Control.Model.set(Control.Model.Property.fanMode, 2);
 Control.Model.set(Control.Model.Property.hasFan, true);
 `))
-				return response, nil
-			}),
+					return response, nil
+				}),
+				Timeout: defaultTimeout,
+			},
 		},
 	}
 	info, err := session.ZoneInfo(1000001)
@@ -112,36 +128,39 @@ Control.Model.set(Control.Model.Property.hasFan, true);
 func TestZoneInfoMergesRuntimeStatus(t *testing.T) {
 	var requestCount int
 	session := &Session{
-		client: &http.Client{
-			Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-				requestCount++
-				response := responseWithStatus(http.StatusOK)
-				switch requestCount {
-				case 1:
-					response.Body = io.NopCloser(strings.NewReader(`
+		client: &sessionClient{
+			httpClient: &http.Client{
+				Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					requestCount++
+					response := responseWithStatus(http.StatusOK)
+					switch requestCount {
+					case 1:
+						response.Body = io.NopCloser(strings.NewReader(`
 Control.Model.set(Control.Model.Property.deviceID, 1000001);
 Control.Model.set(Control.Model.Property.systemSwitchPosition, 3);
 Control.Model.set(Control.Model.Property.fanMode, 0);
 `))
-				case 2:
-					if request.Method != http.MethodPost {
-						t.Fatalf("expected runtime status POST; got %s", request.Method)
-					}
-					if request.URL.String() != "https://mytotalconnectcomfort.com/portal/Device/GetZoneListData?locationId=1000000&page=1" {
-						t.Fatalf("unexpected runtime status URL: %s", request.URL)
-					}
-					response.Body = io.NopCloser(strings.NewReader(`[
+					case 2:
+						if request.Method != http.MethodPost {
+							t.Fatalf("expected runtime status POST; got %s", request.Method)
+						}
+						if request.URL.String() != "https://mytotalconnectcomfort.com/portal/Device/GetZoneListData?locationId=1000000&page=1" {
+							t.Fatalf("unexpected runtime status URL: %s", request.URL)
+						}
+						response.Body = io.NopCloser(strings.NewReader(`[
 						{"DeviceID":1000002,"IsLost":false,"GatewayIsLost":false,"GatewayUpgrading":false,"EquipmentOutputStatus":0,"IsFanRunning":false},
 						{"DeviceID":1000001,"IsLost":false,"GatewayIsLost":false,"GatewayUpgrading":false,"EquipmentOutputStatus":2,"IsFanRunning":true}
 					]`))
-				default:
-					t.Fatalf("unexpected request %d", requestCount)
-				}
-				return response, nil
-			}),
+					default:
+						t.Fatalf("unexpected request %d", requestCount)
+					}
+					return response, nil
+				}),
+				Timeout: defaultTimeout,
+			},
+			locationID: 1000000,
+			zonesURL:   "https://mytotalconnectcomfort.com/portal/1000000/Zones",
 		},
-		locationID: 1000000,
-		zonesURL:   "https://mytotalconnectcomfort.com/portal/1000000/Zones",
 	}
 	info, err := session.ZoneInfo(1000001)
 	if err != nil {
@@ -158,6 +177,17 @@ Control.Model.set(Control.Model.Property.fanMode, 0);
 	}
 	if info.SystemSwitchPosition != SystemSwitchCool {
 		t.Fatalf("expected cool mode; got %d", info.SystemSwitchPosition)
+	}
+}
+
+func TestSessionClientsUseDefaultTimeout(t *testing.T) {
+	session := &Session{
+		client: &sessionClient{
+			httpClient: &http.Client{Timeout: defaultTimeout},
+		},
+	}
+	if session.getClient().httpClient.Timeout != 10*time.Second {
+		t.Fatalf("expected default timeout; got %s", session.getClient().httpClient.Timeout)
 	}
 }
 

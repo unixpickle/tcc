@@ -3,9 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/unixpickle/tcc"
 )
@@ -45,7 +49,7 @@ func TestDevicesEndpointReturnsZonesAndInfo(t *testing.T) {
 		},
 	}
 	recorder := httptest.NewRecorder()
-	newHandler(session).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/devices", nil))
+	newTestHandler(session).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/devices", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d", recorder.Code)
 	}
@@ -53,8 +57,8 @@ func TestDevicesEndpointReturnsZonesAndInfo(t *testing.T) {
 	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 		t.Fatal(err)
 	}
-	if !session.refreshed {
-		t.Fatal("expected zones to be refreshed")
+	if session.zoneCalls != 1 {
+		t.Fatalf("expected zones to be fetched once; got %d", session.zoneCalls)
 	}
 	if len(response.Devices) != 1 {
 		t.Fatalf("expected one device; got %d", len(response.Devices))
@@ -85,7 +89,7 @@ func TestSetTemperatureCreatesPermanentHoldForActiveMode(t *testing.T) {
 	}
 	body := bytes.NewBufferString(`{"temperature":69}`)
 	recorder := httptest.NewRecorder()
-	newHandler(session).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/devices/1001/temperature", body))
+	newTestHandler(session).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/devices/1001/temperature", body))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body)
 	}
@@ -119,7 +123,7 @@ func TestSetTemperatureUsesRequestedSystem(t *testing.T) {
 	}
 	body := bytes.NewBufferString(`{"temperature":66,"system":"cool"}`)
 	recorder := httptest.NewRecorder()
-	newHandler(session).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/devices/1001/temperature", body))
+	newTestHandler(session).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/devices/1001/temperature", body))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body)
 	}
@@ -149,7 +153,7 @@ func TestSetSystemReloadsDeviceStatus(t *testing.T) {
 	}
 	body := bytes.NewBufferString(`{"system":"cool"}`)
 	recorder := httptest.NewRecorder()
-	newHandler(session).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/devices/1001/system", body))
+	newTestHandler(session).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/devices/1001/system", body))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body)
 	}
@@ -165,6 +169,104 @@ func TestSetSystemReloadsDeviceStatus(t *testing.T) {
 	}
 	if response.System != "cool" || response.ActiveSetpoint == nil || *response.ActiveSetpoint != 73 {
 		t.Fatalf("expected reloaded cool state; got %+v", response)
+	}
+}
+
+func TestDevicesEndpointReloginsAndRetriesUnauthorizedZones(t *testing.T) {
+	temp := 68.0
+	session := &fakeSession{
+		zones: []tcc.Zone{{
+			ID:          1001,
+			Name:        "Downstairs",
+			Temperature: &temp,
+		}},
+		zoneErrors: []error{fmt.Errorf("fetch zones: %w", tcc.ErrUnauthorized)},
+		infos: map[tcc.ZoneID]*tcc.ZoneInfo{
+			1001: {
+				DeviceID:             1001,
+				SystemSwitchPosition: tcc.SystemSwitchHeat,
+				FanMode:              tcc.FanModeAuto,
+			},
+		},
+	}
+	recorder := httptest.NewRecorder()
+	newTestHandler(session).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/devices", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body)
+	}
+	if session.reloginCalls != 1 {
+		t.Fatalf("expected one relogin; got %d", session.reloginCalls)
+	}
+	if session.zoneCalls != 2 {
+		t.Fatalf("expected zones to be retried; got %d calls", session.zoneCalls)
+	}
+}
+
+func TestRecentReloginAttemptReturnsOriginalUnauthorizedError(t *testing.T) {
+	session := &fakeSession{
+		zoneErrors: []error{fmt.Errorf("fetch zones: %w", tcc.ErrUnauthorized)},
+	}
+	handler := newTestHandler(session)
+	handler.lastLoginAttempt = time.Now()
+	handler.lastLoginErr = errors.New("recent relogin failed")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/devices", nil))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body)
+	}
+	if session.reloginCalls != 0 {
+		t.Fatalf("expected relogin to be throttled; got %d calls", session.reloginCalls)
+	}
+	if !strings.Contains(recorder.Body.String(), tcc.ErrUnauthorized.Error()) {
+		t.Fatalf("expected original unauthorized error in response; got %s", recorder.Body)
+	}
+}
+
+func TestRecentSuccessfulReloginRetriesUnauthorizedError(t *testing.T) {
+	session := &fakeSession{
+		zones: []tcc.Zone{{
+			ID:   1001,
+			Name: "Downstairs",
+		}},
+		zoneErrors: []error{fmt.Errorf("fetch zones: %w", tcc.ErrUnauthorized)},
+		infos: map[tcc.ZoneID]*tcc.ZoneInfo{
+			1001: {
+				DeviceID:             1001,
+				SystemSwitchPosition: tcc.SystemSwitchHeat,
+				FanMode:              tcc.FanModeAuto,
+			},
+		},
+	}
+	handler := newTestHandler(session)
+	handler.lastLoginAttempt = time.Now()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/devices", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body)
+	}
+	if session.reloginCalls != 0 {
+		t.Fatalf("expected recent successful relogin to be reused; got %d calls", session.reloginCalls)
+	}
+	if session.zoneCalls != 2 {
+		t.Fatalf("expected zones to be retried; got %d calls", session.zoneCalls)
+	}
+}
+
+func TestFailedReloginReturnsReloginError(t *testing.T) {
+	session := &fakeSession{
+		zoneErrors: []error{fmt.Errorf("fetch zones: %w", tcc.ErrUnauthorized)},
+		reloginErr: errors.New("bad credentials"),
+	}
+	recorder := httptest.NewRecorder()
+	newTestHandler(session).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/devices", nil))
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body)
+	}
+	if session.reloginCalls != 1 {
+		t.Fatalf("expected one relogin; got %d", session.reloginCalls)
+	}
+	if !strings.Contains(recorder.Body.String(), "relogin: bad credentials") {
+		t.Fatalf("expected relogin error in response; got %s", recorder.Body)
 	}
 }
 
@@ -200,30 +302,46 @@ func TestCleanRootRequiresSingleDirectoryName(t *testing.T) {
 }
 
 type fakeSession struct {
-	refreshed  bool
-	infoCalls  int
-	zones      []tcc.Zone
-	infos      map[tcc.ZoneID]*tcc.ZoneInfo
-	lastID     tcc.ZoneID
-	lastChange tcc.ControlChanges
+	zoneCalls    int
+	infoCalls    int
+	reloginCalls int
+	zones        []tcc.Zone
+	infos        map[tcc.ZoneID]*tcc.ZoneInfo
+	zoneErrors   []error
+	infoErrors   []error
+	submitErrors []error
+	reloginErr   error
+	lastID       tcc.ZoneID
+	lastChange   tcc.ControlChanges
 }
 
-func (f *fakeSession) RefreshZones() error {
-	f.refreshed = true
-	return nil
-}
-
-func (f *fakeSession) Zones() []tcc.Zone {
-	return f.zones
+func (f *fakeSession) Zones() ([]tcc.Zone, error) {
+	f.zoneCalls++
+	if len(f.zoneErrors) != 0 {
+		err := f.zoneErrors[0]
+		f.zoneErrors = f.zoneErrors[1:]
+		return nil, err
+	}
+	return f.zones, nil
 }
 
 func (f *fakeSession) ZoneInfo(id tcc.ZoneID) (*tcc.ZoneInfo, error) {
 	f.infoCalls++
+	if len(f.infoErrors) != 0 {
+		err := f.infoErrors[0]
+		f.infoErrors = f.infoErrors[1:]
+		return nil, err
+	}
 	info := *f.infos[id]
 	return &info, nil
 }
 
 func (f *fakeSession) SubmitControlChanges(id tcc.ZoneID, changes tcc.ControlChanges) error {
+	if len(f.submitErrors) != 0 {
+		err := f.submitErrors[0]
+		f.submitErrors = f.submitErrors[1:]
+		return err
+	}
 	f.lastID = id
 	f.lastChange = changes
 	if changes.SystemSwitch != nil {
@@ -240,4 +358,13 @@ func (f *fakeSession) SubmitControlChanges(id tcc.ZoneID, changes tcc.ControlCha
 		f.infos[id].FanMode = *changes.FanMode
 	}
 	return nil
+}
+
+func (f *fakeSession) Relogin(username, password string) error {
+	f.reloginCalls++
+	return f.reloginErr
+}
+
+func newTestHandler(session *fakeSession) *Handler {
+	return newHandler(session, "user", "pass").(*Handler)
 }

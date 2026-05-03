@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,6 +20,7 @@ const (
 	submitControlURL  = baseURL + "/portal/Device/SubmitControlScreenChanges"
 	defaultControlURL = baseURL + "/portal/Device/Control/%d?page=1"
 	zoneListDataURL   = baseURL + "/portal/Device/GetZoneListData?locationId=%d&page=1"
+	defaultTimeout    = 10 * time.Second
 )
 
 var (
@@ -27,10 +29,14 @@ var (
 )
 
 type Session struct {
-	client     *http.Client
+	clientMu sync.RWMutex
+	client   *sessionClient
+}
+
+type sessionClient struct {
+	httpClient *http.Client
 	locationID int
 	zonesURL   string
-	zones      []Zone
 }
 
 type Zone struct {
@@ -78,6 +84,14 @@ type ControlChanges struct {
 }
 
 func NewSession(username, password string) (*Session, error) {
+	client, err := login(username, password)
+	if err != nil {
+		return nil, err
+	}
+	return &Session{client: client}, nil
+}
+
+func login(username, password string) (*sessionClient, error) {
 	d := time.Now()
 	_, offsetSeconds := d.Zone()
 	timeOffset := -offsetSeconds / 60
@@ -92,7 +106,8 @@ func NewSession(username, password string) (*Session, error) {
 		return nil, err
 	}
 	client := &http.Client{
-		Jar: jar,
+		Jar:     jar,
+		Timeout: defaultTimeout,
 	}
 	response, err := client.PostForm(loginURL, body)
 	if err != nil {
@@ -101,46 +116,50 @@ func NewSession(username, password string) (*Session, error) {
 	if response.Body != nil {
 		defer response.Body.Close()
 	}
+	if err := checkResponseStatus("login", response); err != nil {
+		return nil, err
+	}
 	if !strings.HasSuffix(response.Request.URL.Path, "Zones") {
 		return nil, ErrLoginFailed
+	}
+	return &sessionClient{
+		httpClient: client,
+		locationID: locationIDFromZonesURL(response.Request.URL),
+		zonesURL:   response.Request.URL.String(),
+	}, nil
+}
+
+func (s *Session) Relogin(username, password string) error {
+	s.clientMu.Lock()
+	defer s.clientMu.Unlock()
+	client, err := login(username, password)
+	if err != nil {
+		return err
+	}
+	s.client = client
+	return nil
+}
+
+func (s *Session) Zones() ([]Zone, error) {
+	client := s.getClient()
+	response, err := client.httpClient.Get(client.zonesURL)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if err := checkResponseStatus("fetch zones", response); err != nil {
+		return nil, err
 	}
 	zones, err := parseZones(response.Body)
 	if err != nil {
 		return nil, err
 	}
-	return &Session{
-		client:     client,
-		locationID: locationIDFromZonesURL(response.Request.URL),
-		zonesURL:   response.Request.URL.String(),
-		zones:      zones,
-	}, nil
-}
-
-func (s *Session) Zones() []Zone {
-	zones := make([]Zone, len(s.zones))
-	copy(zones, s.zones)
-	return zones
-}
-
-func (s *Session) RefreshZones() error {
-	response, err := s.client.Get(s.zonesURL)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if err := checkResponseStatus("refresh zones", response); err != nil {
-		return err
-	}
-	zones, err := parseZones(response.Body)
-	if err != nil {
-		return err
-	}
-	s.zones = zones
-	return nil
+	return zones, nil
 }
 
 func (s *Session) ZoneInfo(zoneID ZoneID) (*ZoneInfo, error) {
-	response, err := s.client.Get(fmt.Sprintf(defaultControlURL, zoneID))
+	client := s.getClient()
+	response, err := client.httpClient.Get(fmt.Sprintf(defaultControlURL, zoneID))
 	if err != nil {
 		return nil, err
 	}
@@ -152,25 +171,25 @@ func (s *Session) ZoneInfo(zoneID ZoneID) (*ZoneInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.locationID != 0 {
-		if err := s.populateZoneInfoRuntimeStatus(info); err != nil {
+	if client.locationID != 0 {
+		if err := populateZoneInfoRuntimeStatus(client, info); err != nil {
 			return nil, err
 		}
 	}
 	return info, nil
 }
 
-func (s *Session) populateZoneInfoRuntimeStatus(info *ZoneInfo) error {
-	request, err := http.NewRequest(http.MethodPost, fmt.Sprintf(zoneListDataURL, s.locationID), nil)
+func populateZoneInfoRuntimeStatus(client *sessionClient, info *ZoneInfo) error {
+	request, err := http.NewRequest(http.MethodPost, fmt.Sprintf(zoneListDataURL, client.locationID), nil)
 	if err != nil {
 		return err
 	}
 	request.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
 	request.Header.Set("Content-Type", "application/json; charset=utf-8")
 	request.Header.Set("Origin", baseURL)
-	request.Header.Set("Referer", s.zonesURL)
+	request.Header.Set("Referer", client.zonesURL)
 	request.Header.Set("X-Requested-With", "XMLHttpRequest")
-	response, err := s.client.Do(request)
+	response, err := client.httpClient.Do(request)
 	if err != nil {
 		return err
 	}
@@ -239,6 +258,7 @@ func (s *Session) SetNextPeriodSetpoints(zoneID ZoneID, heatSetpoint, coolSetpoi
 }
 
 func (s *Session) SubmitControlChanges(zoneID ZoneID, changes ControlChanges) error {
+	client := s.getClient()
 	if err := validatePeriodPointer("HeatNextPeriod", changes.HeatNextPeriod); err != nil {
 		return err
 	}
@@ -268,7 +288,7 @@ func (s *Session) SubmitControlChanges(zoneID ZoneID, changes ControlChanges) er
 	request.Header.Set("Origin", baseURL)
 	request.Header.Set("Referer", fmt.Sprintf(defaultControlURL, zoneID))
 	request.Header.Set("X-Requested-With", "XMLHttpRequest")
-	response, err := s.client.Do(request)
+	response, err := client.httpClient.Do(request)
 	if err != nil {
 		return err
 	}
@@ -277,6 +297,12 @@ func (s *Session) SubmitControlChanges(zoneID ZoneID, changes ControlChanges) er
 		return err
 	}
 	return nil
+}
+
+func (s *Session) getClient() *sessionClient {
+	s.clientMu.RLock()
+	defer s.clientMu.RUnlock()
+	return s.client
 }
 
 func validatePeriodPointer(name string, period *Period) error {
