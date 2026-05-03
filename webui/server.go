@@ -176,9 +176,7 @@ func (h *Handler) serveDevices(w http.ResponseWriter, r *http.Request) {
 			writeBackendError(w, err)
 			return
 		}
-		device.Name = zone.Name
-		device.Temperature = zone.Temperature
-		device.Humidity = zone.Humidity
+		applyZoneMetadata(&device, zone)
 		devices = append(devices, device)
 	}
 	writeJSON(w, http.StatusOK, devicesResponse{Devices: devices})
@@ -201,9 +199,7 @@ func (h *Handler) serveDevice(w http.ResponseWriter, r *http.Request, idPart str
 	}
 	for _, zone := range zones {
 		if zone.ID == zoneID {
-			device.Name = zone.Name
-			device.Temperature = zone.Temperature
-			device.Humidity = zone.Humidity
+			applyZoneMetadata(&device, zone)
 			break
 		}
 	}
@@ -336,10 +332,21 @@ func (h *Handler) submitAndWriteDevice(w http.ResponseWriter, zoneID tcc.ZoneID,
 		writeBackendError(w, err)
 		return
 	}
+	zones, err := h.zones()
+	if err != nil {
+		writeBackendError(w, err)
+		return
+	}
 	device, err := h.deviceResponse(zoneID)
 	if err != nil {
 		writeBackendError(w, err)
 		return
+	}
+	for _, zone := range zones {
+		if zone.ID == zoneID {
+			applyZoneMetadata(&device, zone)
+			break
+		}
 	}
 	writeJSON(w, http.StatusOK, device)
 }
@@ -404,6 +411,12 @@ func (h *Handler) maybeRelogin(err error) error {
 	}
 	h.lastLoginErr = nil
 	return nil
+}
+
+func applyZoneMetadata(device *deviceResponse, zone tcc.Zone) {
+	device.Name = zone.Name
+	device.Temperature = zone.Temperature
+	device.Humidity = zone.Humidity
 }
 
 type devicesResponse struct {

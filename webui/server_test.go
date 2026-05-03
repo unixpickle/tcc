@@ -140,7 +140,15 @@ func TestSetTemperatureUsesRequestedSystem(t *testing.T) {
 }
 
 func TestSetSystemReloadsDeviceStatus(t *testing.T) {
+	temp := 68.0
+	humidity := 35.0
 	session := &fakeSession{
+		zones: []tcc.Zone{{
+			ID:          1001,
+			Name:        "Downstairs",
+			Temperature: &temp,
+			Humidity:    &humidity,
+		}},
 		infos: map[tcc.ZoneID]*tcc.ZoneInfo{
 			1001: {
 				DeviceID:             1001,
@@ -169,6 +177,12 @@ func TestSetSystemReloadsDeviceStatus(t *testing.T) {
 	}
 	if response.System != "cool" || response.ActiveSetpoint == nil || *response.ActiveSetpoint != 73 {
 		t.Fatalf("expected reloaded cool state; got %+v", response)
+	}
+	if response.Name != "Downstairs" || response.Temperature == nil || *response.Temperature != 68 {
+		t.Fatalf("expected zone metadata in response; got %+v", response)
+	}
+	if response.Humidity == nil || *response.Humidity != 35 {
+		t.Fatalf("expected humidity in response; got %+v", response)
 	}
 }
 
