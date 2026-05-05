@@ -169,7 +169,7 @@ func (h *Handler) serveDevices(w http.ResponseWriter, r *http.Request) {
 		writeBackendError(w, err)
 		return
 	}
-	var devices []deviceResponse
+	devices := make([]deviceResponse, 0, len(zones))
 	for _, zone := range zones {
 		device, err := h.deviceResponse(zone.ID)
 		if err != nil {

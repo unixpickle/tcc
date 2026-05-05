@@ -150,6 +150,9 @@ func (s *Session) Zones() ([]Zone, error) {
 	if err := checkResponseStatus("fetch zones", response); err != nil {
 		return nil, err
 	}
+	if !strings.HasSuffix(response.Request.URL.Path, "Zones") {
+		return nil, fmt.Errorf("fetch zones: %w", ErrUnauthorized)
+	}
 	zones, err := parseZones(response.Body)
 	if err != nil {
 		return nil, err

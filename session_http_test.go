@@ -31,6 +31,27 @@ func TestZonesReturnsUnauthorizedError(t *testing.T) {
 	}
 }
 
+func TestZonesRedirectToLoginReturnsUnauthorizedError(t *testing.T) {
+	session := &Session{
+		client: &sessionClient{
+			httpClient: &http.Client{
+				Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					response := responseWithStatus(http.StatusOK)
+					response.Request = &http.Request{URL: mustParseURL("https://mytotalconnectcomfort.com/portal/")}
+					response.Body = io.NopCloser(strings.NewReader(`<html><body>login</body></html>`))
+					return response, nil
+				}),
+				Timeout: defaultTimeout,
+			},
+			zonesURL: "https://mytotalconnectcomfort.com/portal/1000000/Zones",
+		},
+	}
+	_, err := session.Zones()
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized; got %v", err)
+	}
+}
+
 func TestSubmitControlChangesReturnsUnauthorizedError(t *testing.T) {
 	session := &Session{
 		client: &sessionClient{
@@ -203,5 +224,14 @@ func responseWithStatus(statusCode int) *http.Response {
 		Status:     http.StatusText(statusCode),
 		Body:       io.NopCloser(strings.NewReader("")),
 		Header:     make(http.Header),
+		Request:    &http.Request{URL: mustParseURL("https://mytotalconnectcomfort.com/portal/1000000/Zones")},
 	}
+}
+
+func mustParseURL(value string) *url.URL {
+	result, err := url.Parse(value)
+	if err != nil {
+		panic(err)
+	}
+	return result
 }

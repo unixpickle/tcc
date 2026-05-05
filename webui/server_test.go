@@ -75,6 +75,22 @@ func TestDevicesEndpointReturnsZonesAndInfo(t *testing.T) {
 	}
 }
 
+func TestDevicesEndpointReturnsEmptyListForNoZones(t *testing.T) {
+	session := &fakeSession{}
+	recorder := httptest.NewRecorder()
+	newTestHandler(session).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/devices", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(recorder.Body).Decode(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if string(raw["devices"]) != "[]" {
+		t.Fatalf("expected empty devices array; got %s", raw["devices"])
+	}
+}
+
 func TestSetTemperatureCreatesPermanentHoldForActiveMode(t *testing.T) {
 	session := &fakeSession{
 		infos: map[tcc.ZoneID]*tcc.ZoneInfo{

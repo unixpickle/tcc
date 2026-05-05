@@ -14,7 +14,7 @@ func parseZones(r io.Reader) ([]Zone, error) {
 	if err != nil {
 		return nil, err
 	}
-	var zones []Zone
+	zones := []Zone{}
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if n.Type == html.ElementNode && n.Data == "tr" && hasClass(n, "gray-capsule") {

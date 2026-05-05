@@ -62,6 +62,19 @@ func TestParseZones(t *testing.T) {
 	}
 }
 
+func TestParseZonesEmptyReturnsNonNilSlice(t *testing.T) {
+	zones, err := parseZones(bytes.NewBufferString(`<html><body></body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zones == nil {
+		t.Fatal("expected non-nil empty zones slice")
+	}
+	if len(zones) != 0 {
+		t.Fatalf("expected no zones; got %d", len(zones))
+	}
+}
+
 func TestControlScreenChangesJSONIncludesNulls(t *testing.T) {
 	cool := 68.0
 	body, err := json.Marshal(controlScreenChanges{
