@@ -20,7 +20,7 @@ const (
 	submitControlURL  = baseURL + "/portal/Device/SubmitControlScreenChanges"
 	defaultControlURL = baseURL + "/portal/Device/Control/%d?page=1"
 	zoneListDataURL   = baseURL + "/portal/Device/GetZoneListData?locationId=%d&page=1"
-	defaultTimeout    = 10 * time.Second
+	defaultTimeout    = 30 * time.Second
 )
 
 var (
