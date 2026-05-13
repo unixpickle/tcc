@@ -300,6 +300,22 @@ func TestFailedReloginReturnsReloginError(t *testing.T) {
 	}
 }
 
+func TestForcedReloginBypassesRecentAttemptThrottle(t *testing.T) {
+	session := &fakeSession{}
+	handler := newTestHandler(session)
+	handler.lastLoginAttempt = time.Now()
+	handler.lastLoginErr = errors.New("recent relogin failed")
+	if err := handler.forceRelogin(); err != nil {
+		t.Fatalf("unexpected relogin error: %v", err)
+	}
+	if session.reloginCalls != 1 {
+		t.Fatalf("expected forced relogin; got %d calls", session.reloginCalls)
+	}
+	if handler.lastLoginErr != nil {
+		t.Fatalf("expected relogin error to be cleared; got %v", handler.lastLoginErr)
+	}
+}
+
 func TestMountRootHidesUnprefixedRoutes(t *testing.T) {
 	handler := mountRoot(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/devices" {
@@ -396,5 +412,5 @@ func (f *fakeSession) Relogin(username, password string) error {
 }
 
 func newTestHandler(session *fakeSession) *Handler {
-	return newHandler(session, "user", "pass").(*Handler)
+	return newHandler(session, "user", "pass")
 }

@@ -212,6 +212,16 @@ func TestSessionClientsUseDefaultTimeout(t *testing.T) {
 	}
 }
 
+func TestNewHTTPClientDisablesKeepAlives(t *testing.T) {
+	transport, ok := newHTTPClient(nil).Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport; got %T", newHTTPClient(nil).Transport)
+	}
+	if !transport.DisableKeepAlives {
+		t.Fatal("expected HTTP keepalives to be disabled")
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (r roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {

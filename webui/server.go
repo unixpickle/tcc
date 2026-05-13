@@ -21,7 +21,10 @@ import (
 //go:embed static/*
 var staticFiles embed.FS
 
-const MinLoginInterval = 10 * time.Minute
+const (
+	MinLoginInterval = 10 * time.Minute
+	ReloginInterval  = 12 * time.Hour
+)
 
 type session interface {
 	Zones() ([]tcc.Zone, error)
@@ -63,16 +66,23 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	handler := mountRoot(newHandler(session, username, password), root)
+	appHandler := newHandler(session, username, password)
+	go appHandler.reloginEvery(ReloginInterval)
+	handler := mountRoot(appHandler, root)
 	if root == "" {
 		log.Printf("serving TCC web UI at http://localhost%s/", displayAddr(*addr))
 	} else {
 		log.Printf("serving TCC web UI at http://localhost%s/%s/", displayAddr(*addr), root)
 	}
-	log.Fatal(http.ListenAndServe(*addr, handler))
+	server := &http.Server{
+		Addr:    *addr,
+		Handler: handler,
+	}
+	server.SetKeepAlivesEnabled(false)
+	log.Fatal(server.ListenAndServe())
 }
 
-func newHandler(session session, username, password string) http.Handler {
+func newHandler(session session, username, password string) *Handler {
 	static, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		panic(err)
@@ -392,6 +402,16 @@ func (h *Handler) submitControlChanges(zoneID tcc.ZoneID, changes tcc.ControlCha
 	return h.session.SubmitControlChanges(zoneID, changes)
 }
 
+func (h *Handler) reloginEvery(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if err := h.forceRelogin(); err != nil {
+			log.Printf("periodic TCC relogin failed: %v", err)
+		}
+	}
+}
+
 func (h *Handler) maybeRelogin(err error) error {
 	if err == nil || !errors.Is(err, tcc.ErrUnauthorized) {
 		return err
@@ -404,6 +424,16 @@ func (h *Handler) maybeRelogin(err error) error {
 		}
 		return err
 	}
+	return h.reloginLocked()
+}
+
+func (h *Handler) forceRelogin() error {
+	h.reauthMu.Lock()
+	defer h.reauthMu.Unlock()
+	return h.reloginLocked()
+}
+
+func (h *Handler) reloginLocked() error {
 	h.lastLoginAttempt = time.Now()
 	if reloginErr := h.session.Relogin(h.username, h.password); reloginErr != nil {
 		h.lastLoginErr = reloginErr

@@ -105,10 +105,7 @@ func login(username, password string) (*sessionClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{
-		Jar:     jar,
-		Timeout: defaultTimeout,
-	}
+	client := newHTTPClient(jar)
 	response, err := client.PostForm(loginURL, body)
 	if err != nil {
 		return nil, err
@@ -127,6 +124,16 @@ func login(username, password string) (*sessionClient, error) {
 		locationID: locationIDFromZonesURL(response.Request.URL),
 		zonesURL:   response.Request.URL.String(),
 	}, nil
+}
+
+func newHTTPClient(jar http.CookieJar) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableKeepAlives = true
+	return &http.Client{
+		Jar:       jar,
+		Timeout:   defaultTimeout,
+		Transport: transport,
+	}
 }
 
 func (s *Session) Relogin(username, password string) error {
