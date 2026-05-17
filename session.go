@@ -130,7 +130,6 @@ func login(username, password string) (*sessionClient, error) {
 
 func newHTTPClient(jar http.CookieJar) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.DisableKeepAlives = true
 	return &http.Client{
 		Jar:       jar,
 		Timeout:   defaultTimeout,

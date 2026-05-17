@@ -268,7 +268,7 @@ func TestSessionClientsUseDefaultTimeout(t *testing.T) {
 	}
 }
 
-func TestNewHTTPClientDisablesKeepAlives(t *testing.T) {
+func TestNewHTTPClientUsesRapidRetryTransport(t *testing.T) {
 	retryTransport, ok := newHTTPClient(nil).Transport.(rapidRetryTransport)
 	if !ok {
 		t.Fatalf("expected rapidRetryTransport; got %T", newHTTPClient(nil).Transport)
@@ -277,8 +277,8 @@ func TestNewHTTPClientDisablesKeepAlives(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *http.Transport; got %T", retryTransport.base)
 	}
-	if !transport.DisableKeepAlives {
-		t.Fatal("expected HTTP keepalives to be disabled")
+	if transport.DisableKeepAlives {
+		t.Fatal("expected HTTP keepalives to be enabled")
 	}
 }
 
