@@ -21,6 +21,8 @@ const (
 	defaultControlURL = baseURL + "/portal/Device/Control/%d?page=1"
 	zoneListDataURL   = baseURL + "/portal/Device/GetZoneListData?locationId=%d&page=1"
 	defaultTimeout    = 30 * time.Second
+	rapidRetryTimeout = 2 * time.Second
+	rapidRetryCount   = 4
 )
 
 var (
@@ -132,7 +134,7 @@ func newHTTPClient(jar http.CookieJar) *http.Client {
 	return &http.Client{
 		Jar:       jar,
 		Timeout:   defaultTimeout,
-		Transport: transport,
+		Transport: rapidRetryTransport{base: transport},
 	}
 }
 

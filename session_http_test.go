@@ -1,6 +1,7 @@
 package tcc
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -262,18 +263,57 @@ func TestSessionClientsUseDefaultTimeout(t *testing.T) {
 			httpClient: &http.Client{Timeout: defaultTimeout},
 		},
 	}
-	if session.getClient().httpClient.Timeout != 10*time.Second {
+	if session.getClient().httpClient.Timeout != defaultTimeout {
 		t.Fatalf("expected default timeout; got %s", session.getClient().httpClient.Timeout)
 	}
 }
 
 func TestNewHTTPClientDisablesKeepAlives(t *testing.T) {
-	transport, ok := newHTTPClient(nil).Transport.(*http.Transport)
+	retryTransport, ok := newHTTPClient(nil).Transport.(rapidRetryTransport)
 	if !ok {
-		t.Fatalf("expected *http.Transport; got %T", newHTTPClient(nil).Transport)
+		t.Fatalf("expected rapidRetryTransport; got %T", newHTTPClient(nil).Transport)
+	}
+	transport, ok := retryTransport.base.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport; got %T", retryTransport.base)
 	}
 	if !transport.DisableKeepAlives {
 		t.Fatal("expected HTTP keepalives to be disabled")
+	}
+}
+
+func TestRapidRetryTransportRetriesTimedOutRequestsThenWaits(t *testing.T) {
+	request, err := http.NewRequest(http.MethodGet, "https://mytotalconnectcomfort.com/portal/1000000/Zones", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attempts int
+	transport := rapidRetryTransport{
+		base: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			attempts++
+			if attempts <= rapidRetryCount {
+				deadline, ok := request.Context().Deadline()
+				if !ok {
+					t.Fatal("rapid retry request should use a deadline")
+				}
+				if timeout := time.Until(deadline); timeout <= 0 || timeout > rapidRetryTimeout {
+					t.Fatalf("unexpected rapid retry timeout: %s", timeout)
+				}
+				return nil, context.DeadlineExceeded
+			}
+			if _, ok := request.Context().Deadline(); ok {
+				t.Fatal("final request should not use rapid retry deadline")
+			}
+			return responseWithStatus(http.StatusOK), nil
+		}),
+	}
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if attempts != rapidRetryCount+1 {
+		t.Fatalf("expected %d attempts; got %d", rapidRetryCount+1, attempts)
 	}
 }
 
