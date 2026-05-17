@@ -382,6 +382,18 @@ func (f *fakeSession) ZoneInfo(id tcc.ZoneID) (*tcc.ZoneInfo, error) {
 	return &info, nil
 }
 
+func (f *fakeSession) ZoneInfos(ids []tcc.ZoneID) (map[tcc.ZoneID]*tcc.ZoneInfo, error) {
+	infos := make(map[tcc.ZoneID]*tcc.ZoneInfo, len(ids))
+	for _, id := range ids {
+		info, err := f.ZoneInfo(id)
+		if err != nil {
+			return nil, err
+		}
+		infos[id] = info
+	}
+	return infos, nil
+}
+
 func (f *fakeSession) SubmitControlChanges(id tcc.ZoneID, changes tcc.ControlChanges) error {
 	if len(f.submitErrors) != 0 {
 		err := f.submitErrors[0]

@@ -169,6 +169,43 @@ func (s *Session) Zones() ([]Zone, error) {
 
 func (s *Session) ZoneInfo(zoneID ZoneID) (*ZoneInfo, error) {
 	client := s.getClient()
+	info, err := fetchZoneInfoControlPage(client, zoneID)
+	if err != nil {
+		return nil, err
+	}
+	if client.locationID != 0 {
+		statuses, err := fetchZoneRuntimeStatuses(client)
+		if err != nil {
+			return nil, err
+		}
+		applyZoneRuntimeStatuses(info, statuses)
+	}
+	return info, nil
+}
+
+func (s *Session) ZoneInfos(zoneIDs []ZoneID) (map[ZoneID]*ZoneInfo, error) {
+	client := s.getClient()
+	infos := make(map[ZoneID]*ZoneInfo, len(zoneIDs))
+	for _, zoneID := range zoneIDs {
+		info, err := fetchZoneInfoControlPage(client, zoneID)
+		if err != nil {
+			return nil, err
+		}
+		infos[zoneID] = info
+	}
+	if client.locationID != 0 && len(infos) != 0 {
+		statuses, err := fetchZoneRuntimeStatuses(client)
+		if err != nil {
+			return nil, err
+		}
+		for _, info := range infos {
+			applyZoneRuntimeStatuses(info, statuses)
+		}
+	}
+	return infos, nil
+}
+
+func fetchZoneInfoControlPage(client *sessionClient, zoneID ZoneID) (*ZoneInfo, error) {
 	response, err := client.httpClient.Get(fmt.Sprintf(defaultControlURL, zoneID))
 	if err != nil {
 		return nil, err
@@ -181,18 +218,13 @@ func (s *Session) ZoneInfo(zoneID ZoneID) (*ZoneInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	if client.locationID != 0 {
-		if err := populateZoneInfoRuntimeStatus(client, info); err != nil {
-			return nil, err
-		}
-	}
 	return info, nil
 }
 
-func populateZoneInfoRuntimeStatus(client *sessionClient, info *ZoneInfo) error {
+func fetchZoneRuntimeStatuses(client *sessionClient) ([]zoneRuntimeStatus, error) {
 	request, err := http.NewRequest(http.MethodPost, fmt.Sprintf(zoneListDataURL, client.locationID), nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	request.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
 	request.Header.Set("Content-Type", "application/json; charset=utf-8")
@@ -201,16 +233,20 @@ func populateZoneInfoRuntimeStatus(client *sessionClient, info *ZoneInfo) error 
 	request.Header.Set("X-Requested-With", "XMLHttpRequest")
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer response.Body.Close()
 	if err := checkResponseStatus("fetch zone runtime status", response); err != nil {
-		return err
+		return nil, err
 	}
 	var statuses []zoneRuntimeStatus
 	if err := json.NewDecoder(response.Body).Decode(&statuses); err != nil {
-		return err
+		return nil, err
 	}
+	return statuses, nil
+}
+
+func applyZoneRuntimeStatuses(info *ZoneInfo, statuses []zoneRuntimeStatus) {
 	for _, status := range statuses {
 		if status.DeviceID == info.DeviceID {
 			info.RuntimeStatusAvailable = true
@@ -219,10 +255,9 @@ func populateZoneInfoRuntimeStatus(client *sessionClient, info *ZoneInfo) error 
 			info.GatewayUpgrading = status.GatewayUpgrading
 			info.EquipmentOutputStatus = status.EquipmentOutputStatus
 			info.IsFanRunning = status.IsFanRunning
-			return nil
+			return
 		}
 	}
-	return nil
 }
 
 func (s *Session) SetSystemSwitch(zoneID ZoneID, value SystemSwitch) error {

@@ -201,6 +201,61 @@ Control.Model.set(Control.Model.Property.fanMode, 0);
 	}
 }
 
+func TestZoneInfosFetchesRuntimeStatusOnce(t *testing.T) {
+	var runtimeRequestCount int
+	session := &Session{
+		client: &sessionClient{
+			httpClient: &http.Client{
+				Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					response := responseWithStatus(http.StatusOK)
+					switch request.URL.String() {
+					case "https://mytotalconnectcomfort.com/portal/Device/Control/1000001?page=1":
+						response.Body = io.NopCloser(strings.NewReader(`
+Control.Model.set(Control.Model.Property.deviceID, 1000001);
+Control.Model.set(Control.Model.Property.systemSwitchPosition, 1);
+Control.Model.set(Control.Model.Property.fanMode, 0);
+`))
+					case "https://mytotalconnectcomfort.com/portal/Device/Control/1000002?page=1":
+						response.Body = io.NopCloser(strings.NewReader(`
+Control.Model.set(Control.Model.Property.deviceID, 1000002);
+Control.Model.set(Control.Model.Property.systemSwitchPosition, 3);
+Control.Model.set(Control.Model.Property.fanMode, 0);
+`))
+					case "https://mytotalconnectcomfort.com/portal/Device/GetZoneListData?locationId=1000000&page=1":
+						runtimeRequestCount++
+						if request.Method != http.MethodPost {
+							t.Fatalf("expected runtime status POST; got %s", request.Method)
+						}
+						response.Body = io.NopCloser(strings.NewReader(`[
+							{"DeviceID":1000001,"IsLost":false,"GatewayIsLost":false,"GatewayUpgrading":false,"EquipmentOutputStatus":1,"IsFanRunning":false},
+							{"DeviceID":1000002,"IsLost":true,"GatewayIsLost":false,"GatewayUpgrading":false,"EquipmentOutputStatus":2,"IsFanRunning":true}
+						]`))
+					default:
+						t.Fatalf("unexpected request URL: %s", request.URL)
+					}
+					return response, nil
+				}),
+				Timeout: defaultTimeout,
+			},
+			locationID: 1000000,
+			zonesURL:   "https://mytotalconnectcomfort.com/portal/1000000/Zones",
+		},
+	}
+	infos, err := session.ZoneInfos([]ZoneID{1000001, 1000002})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtimeRequestCount != 1 {
+		t.Fatalf("expected one runtime status request; got %d", runtimeRequestCount)
+	}
+	if infos[1000001].EquipmentOutputStatus != 1 || infos[1000001].IsFanRunning {
+		t.Fatalf("unexpected first zone runtime status: %+v", infos[1000001])
+	}
+	if !infos[1000002].RuntimeStatusAvailable || !infos[1000002].IsLost || !infos[1000002].IsFanRunning {
+		t.Fatalf("unexpected second zone runtime status: %+v", infos[1000002])
+	}
+}
+
 func TestSessionClientsUseDefaultTimeout(t *testing.T) {
 	session := &Session{
 		client: &sessionClient{

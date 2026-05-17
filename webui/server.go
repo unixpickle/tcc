@@ -29,6 +29,7 @@ const (
 type session interface {
 	Zones() ([]tcc.Zone, error)
 	ZoneInfo(tcc.ZoneID) (*tcc.ZoneInfo, error)
+	ZoneInfos([]tcc.ZoneID) (map[tcc.ZoneID]*tcc.ZoneInfo, error)
 	SubmitControlChanges(tcc.ZoneID, tcc.ControlChanges) error
 	Relogin(username, password string) error
 }
@@ -179,13 +180,23 @@ func (h *Handler) serveDevices(w http.ResponseWriter, r *http.Request) {
 		writeBackendError(w, err)
 		return
 	}
+	zoneIDs := make([]tcc.ZoneID, 0, len(zones))
+	for _, zone := range zones {
+		zoneIDs = append(zoneIDs, zone.ID)
+	}
+	infos, err := h.zoneInfos(zoneIDs)
+	if err != nil {
+		writeBackendError(w, err)
+		return
+	}
 	devices := make([]deviceResponse, 0, len(zones))
 	for _, zone := range zones {
-		device, err := h.deviceResponse(zone.ID)
-		if err != nil {
-			writeBackendError(w, err)
+		info, ok := infos[zone.ID]
+		if !ok {
+			writeBackendError(w, fmt.Errorf("missing zone info for %d", zone.ID))
 			return
 		}
+		device := newDeviceResponse(info)
 		applyZoneMetadata(&device, zone)
 		devices = append(devices, device)
 	}
@@ -389,6 +400,17 @@ func (h *Handler) zoneInfo(zoneID tcc.ZoneID) (*tcc.ZoneInfo, error) {
 		return nil, err
 	}
 	return h.session.ZoneInfo(zoneID)
+}
+
+func (h *Handler) zoneInfos(zoneIDs []tcc.ZoneID) (map[tcc.ZoneID]*tcc.ZoneInfo, error) {
+	infos, err := h.session.ZoneInfos(zoneIDs)
+	if err == nil {
+		return infos, nil
+	}
+	if err := h.maybeRelogin(err); err != nil {
+		return nil, err
+	}
+	return h.session.ZoneInfos(zoneIDs)
 }
 
 func (h *Handler) submitControlChanges(zoneID tcc.ZoneID, changes tcc.ControlChanges) error {
