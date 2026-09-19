@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/unixpickle/tcc/thermostat"
 )
 
 const (
@@ -27,7 +29,7 @@ const (
 
 var (
 	ErrLoginFailed  = errors.New("TCC login failed")
-	ErrUnauthorized = errors.New("TCC session unauthorized")
+	ErrUnauthorized = thermostat.ErrUnauthorized
 )
 
 type Session struct {

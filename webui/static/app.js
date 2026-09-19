@@ -64,29 +64,32 @@ function renderDevice(device) {
   card.querySelector("h2").textContent = device.name || `Device ${device.id}`;
   const units = device.displayedUnits || "F";
   const humidity = device.humidity == null ? "" : ` · ${Math.round(device.humidity)}% humidity`;
-  card.querySelector(".meta").textContent = `${device.system.toUpperCase()} · fan ${device.fan}${humidity}`;
+  card.querySelector(".meta").textContent = `${label(device.system)}${device.fanOptions?.length ? ` · fan ${label(device.fan)}` : ""}${humidity}`;
   card.querySelector(".current-temp").textContent = formatTemp(
     device.displayTemperature ?? device.temperature,
     units,
   );
   const runState = card.querySelector(".run-state");
-  runState.textContent = device.equipmentRunning ? "Running" : "Idle";
-  runState.classList.toggle("running", device.equipmentRunning);
+  runState.textContent = device.offline ? "Offline" : !device.runtimeAvailable ? "Unknown" : device.equipmentRunning ? "Running" : "Idle";
+  runState.classList.toggle("running", !device.offline && device.runtimeAvailable && device.equipmentRunning);
   const input = card.querySelector(".setpoint");
   if (temperatureState.pending != null) {
     input.value = String(temperatureState.pending);
   } else if (temperatureState.savingTemperature != null) {
     input.value = String(temperatureState.savingTemperature);
   } else if (document.activeElement !== input) {
-    input.value = device.activeSetpoint == null ? "" : Math.round(device.activeSetpoint);
+    input.value = device.activeSetpoint == null ? "" : device.activeSetpoint;
   }
-  input.min = activeRange(device).min || "";
-  input.max = activeRange(device).max || "";
-  input.disabled = device.system === "off" || !device.setpointAllowed;
+  input.min = activeRange(device).min ?? "";
+  input.max = activeRange(device).max ?? "";
+  input.step = device.temperatureStep || 1;
+  input.disabled = !["heat", "cool", "emergencyheat"].includes(device.system) || !device.setpointAllowed || device.offline;
   card.querySelector(".temp-down").disabled = input.disabled;
   card.querySelector(".temp-up").disabled = input.disabled;
   fillSelect(card.querySelector(".system"), device.systemOptions, device.system);
   fillSelect(card.querySelector(".fan"), device.fanOptions, device.fan);
+  card.querySelector(".system").disabled = device.offline || !device.systemOptions?.length;
+  card.querySelector(".fan").disabled = device.offline || !device.fanOptions?.length;
   if (!temperatureState.saving && temperatureState.pending == null) {
     card.querySelector(".message").textContent = device.offline ? "Device appears offline." : "";
   }
@@ -98,16 +101,18 @@ function wireCard(card, id) {
   card.querySelector(".temp-up").addEventListener("click", () => adjustTemperature(card, 1));
   input.addEventListener("change", () => setTemperature(card, Number(input.value)));
   card.querySelector(".system").addEventListener("change", (event) => {
-    postControl(card, apiPath(`devices/${id}/system`), { system: event.target.value });
+    postControl(card, apiPath(`devices/${encodeURIComponent(id)}/system`), { system: event.target.value });
   });
   card.querySelector(".fan").addEventListener("change", (event) => {
-    postControl(card, apiPath(`devices/${id}/fan`), { fan: event.target.value });
+    postControl(card, apiPath(`devices/${encodeURIComponent(id)}/fan`), { fan: event.target.value });
   });
 }
 
 function adjustTemperature(card, delta) {
   const input = card.querySelector(".setpoint");
-  const next = Number(input.value || 0) + delta;
+  const step = Number(input.step) || 1;
+  const next = Math.round((Number(input.value || 0) + delta * step) * 100) / 100;
+  if ((input.min !== "" && next < Number(input.min)) || (input.max !== "" && next > Number(input.max))) return;
   input.value = String(next);
   setTemperature(card, next);
 }
@@ -140,7 +145,7 @@ async function sendTemperature(card) {
   setCardMessage(card, "Saving...");
   card.classList.add("busy");
   try {
-    const device = await requestJSON(apiPath(`devices/${card.dataset.deviceId}/temperature`), {
+    const device = await requestJSON(apiPath(`devices/${encodeURIComponent(card.dataset.deviceId)}/temperature`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ temperature, system: card.dataset.system }),
@@ -205,7 +210,7 @@ function fillSelect(select, options, value) {
 }
 
 function activeRange(device) {
-  if (device.system === "heat") {
+  if (["heat", "emergencyheat"].includes(device.system)) {
     return device.heatRange || {};
   }
   if (device.system === "cool") {
@@ -215,10 +220,12 @@ function activeRange(device) {
 }
 
 function formatTemp(value, units) {
-  return value == null ? "--" : `${Math.round(value)}°${units}`;
+  return value == null ? "--" : `${Number(value.toFixed(1))}°${units}`;
 }
 
 function label(value) {
+  if (value === "emergencyheat") return "Emergency heat";
+  if (value === "followschedule") return "Follow schedule";
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 

@@ -1,31 +1,16 @@
 # webui
 
-This directory contains a standalone web server for controlling all thermostats
-from a single page.
+A standalone server for Total Connect Comfort and Resideo app thermostats.
+Set `TCC_USERNAME` / `TCC_PASSWORD`, `RESIDEO_USERNAME` / `RESIDEO_PASSWORD`,
+or both complete pairs, then run:
 
 ```sh
-TCC_USERNAME=email@example.com TCC_PASSWORD=password go run ./webui
+go run ./webui
 ```
 
-Pass an optional single path segment to hide the app and API under that root:
+Use `-addr :9090` to change the listen address, and `-root my-secret-root` to
+serve the UI and API below `/my-secret-root/`.
 
-```sh
-TCC_USERNAME=email@example.com TCC_PASSWORD=password go run ./webui -root my-secret-root
-```
-
-The server listens on `:8080` by default. Use `-addr` to override it:
-
-```sh
-TCC_USERNAME=email@example.com TCC_PASSWORD=password go run ./webui -addr :9090
-```
-
-The browser UI is served from `/`, or from `/{root}/` when a root is passed.
-JSON endpoints are rooted the same way:
-
-- `GET /api/devices`
-- `GET /api/devices/{id}`
-- `POST /api/devices/{id}/temperature` with `{"temperature": 70}`
-- `POST /api/devices/{id}/system` with `{"system": "heat" | "cool" | "off"}`
-- `POST /api/devices/{id}/fan` with `{"fan": "auto" | "on" | "circulate"}`
-
-All control endpoints submit permanent holds.
+The HTTP handlers accept a `thermostat.Backend`; provider setup is in `main.go`.
+Device IDs are opaque strings. See the [project README](../README.md) for the
+shared API, credential setup, and provider behavior.
