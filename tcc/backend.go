@@ -3,6 +3,7 @@ package tcc
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,8 +13,9 @@ import (
 )
 
 const (
-	MinLoginInterval = 10 * time.Minute
-	ReloginInterval  = 12 * time.Hour
+	MinLoginInterval        = 10 * time.Minute
+	ReloginInterval         = 12 * time.Hour
+	TimeoutReloginThreshold = 3
 )
 
 type session interface {
@@ -26,12 +28,14 @@ type session interface {
 
 // Backend adapts a TCC account to the common thermostat API.
 type Backend struct {
-	session            session
-	username, password string
-	controlMu          sync.Mutex
-	reauthMu           sync.Mutex
-	lastLoginAttempt   time.Time
-	lastLoginErr       error
+	session             session
+	username, password  string
+	controlMu           sync.Mutex
+	reauthMu            sync.Mutex
+	lastLoginAttempt    time.Time
+	lastLoginErr        error
+	consecutiveTimeouts int
+	lastTimeoutRelogin  time.Time
 }
 
 var _ thermostat.Backend = (*Backend)(nil)
@@ -41,7 +45,9 @@ func NewBackend(username, password string) (*Backend, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Backend{session: s, username: username, password: password, lastLoginAttempt: time.Now()}, nil
+	b := &Backend{session: s, username: username, password: password, lastLoginAttempt: time.Now()}
+	go b.reloginEvery(ReloginInterval, nil)
+	return b, nil
 }
 
 func (h *Backend) Devices() ([]thermostat.Device, error) {
@@ -70,10 +76,19 @@ func (h *Backend) Devices() ([]thermostat.Device, error) {
 		d.Name, d.Temperature, d.Humidity = z.Name, z.Temperature, z.Humidity
 		result = append(result, d)
 	}
+	h.noteRequestSuccess()
 	return result, nil
 }
 
 func (h *Backend) Device(id string) (thermostat.Device, error) {
+	d, err := h.device(id)
+	if err == nil {
+		h.noteRequestSuccess()
+	}
+	return d, err
+}
+
+func (h *Backend) device(id string) (thermostat.Device, error) {
 	if err := h.refreshIfDue(); err != nil {
 		return thermostat.Device{}, err
 	}
@@ -141,7 +156,11 @@ func (h *Backend) SetTemperature(id string, temperature float64, system string) 
 	if system == "cool" || cool != info.CoolSetpoint {
 		changes.CoolSetpoint = &cool
 	}
-	return h.submitControlChanges(zone.ID, changes)
+	err = h.submitControlChanges(zone.ID, changes)
+	if err == nil {
+		h.noteRequestSuccess()
+	}
+	return err
 }
 
 func (h *Backend) SetSystem(id, system string) error {
@@ -151,7 +170,7 @@ func (h *Backend) SetSystem(id, system string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", thermostat.ErrInvalid, err)
 	}
-	d, err := h.Device(id)
+	d, err := h.device(id)
 	if err != nil {
 		return err
 	}
@@ -163,7 +182,11 @@ func (h *Backend) SetSystem(id, system string) error {
 	}
 	n, _ := strconv.Atoi(id)
 	hold := HoldPermanent
-	return h.submitControlChanges(ZoneID(n), ControlChanges{SystemSwitch: &value, StatusHeat: &hold, StatusCool: &hold})
+	err = h.submitControlChanges(ZoneID(n), ControlChanges{SystemSwitch: &value, StatusHeat: &hold, StatusCool: &hold})
+	if err == nil {
+		h.noteRequestSuccess()
+	}
+	return err
 }
 
 func (h *Backend) SetFan(id, fan string) error {
@@ -173,7 +196,7 @@ func (h *Backend) SetFan(id, fan string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", thermostat.ErrInvalid, err)
 	}
-	d, err := h.Device(id)
+	d, err := h.device(id)
 	if err != nil {
 		return err
 	}
@@ -185,7 +208,11 @@ func (h *Backend) SetFan(id, fan string) error {
 	}
 	n, _ := strconv.Atoi(id)
 	hold := HoldPermanent
-	return h.submitControlChanges(ZoneID(n), ControlChanges{FanMode: &value, StatusHeat: &hold, StatusCool: &hold})
+	err = h.submitControlChanges(ZoneID(n), ControlChanges{FanMode: &value, StatusHeat: &hold, StatusCool: &hold})
+	if err == nil {
+		h.noteRequestSuccess()
+	}
+	return err
 }
 
 // Refresh lazily on use rather than keeping a background goroutine alive.
@@ -243,7 +270,13 @@ func (h *Backend) submitControlChanges(zoneID ZoneID, changes ControlChanges) er
 }
 
 func (h *Backend) maybeRelogin(err error) error {
-	if err == nil || !errors.Is(err, ErrUnauthorized) {
+	if err == nil {
+		return nil
+	}
+	if isTimeoutError(err) {
+		return h.maybeReloginAfterTimeout(err)
+	}
+	if !errors.Is(err, ErrUnauthorized) {
 		return err
 	}
 	h.reauthMu.Lock()
@@ -255,6 +288,45 @@ func (h *Backend) maybeRelogin(err error) error {
 		return err
 	}
 	return h.reloginLocked()
+}
+
+func (h *Backend) maybeReloginAfterTimeout(timeoutErr error) error {
+	h.reauthMu.Lock()
+	defer h.reauthMu.Unlock()
+	h.consecutiveTimeouts++
+	if h.consecutiveTimeouts < TimeoutReloginThreshold || time.Since(h.lastTimeoutRelogin) < MinLoginInterval {
+		return timeoutErr
+	}
+	h.consecutiveTimeouts = 0
+	h.lastTimeoutRelogin = time.Now()
+	if err := h.reloginLocked(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (h *Backend) noteRequestSuccess() {
+	h.reauthMu.Lock()
+	h.consecutiveTimeouts = 0
+	h.reauthMu.Unlock()
+}
+
+func (h *Backend) reloginEvery(interval time.Duration, done <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			h.reauthMu.Lock()
+			err := h.reloginLocked()
+			h.reauthMu.Unlock()
+			if err != nil {
+				log.Printf("periodic TCC relogin failed: %v", err)
+			}
+		case <-done:
+			return
+		}
+	}
 }
 
 func (h *Backend) reloginLocked() error {

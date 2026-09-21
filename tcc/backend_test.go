@@ -1,6 +1,7 @@
 package tcc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -163,18 +164,74 @@ func TestBackendReloginThrottle(t *testing.T) {
 	}
 }
 
+func TestBackendReloginAfterRepeatedTimeouts(t *testing.T) {
+	b, s := backendFixture()
+	timeout := fmt.Errorf("TCC stalled: %w", context.DeadlineExceeded)
+	s.zoneErrors = []error{timeout, timeout, timeout}
+	for i := 0; i < TimeoutReloginThreshold-1; i++ {
+		if _, err := b.Devices(); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("timeout %d: %v", i+1, err)
+		}
+	}
+	if s.reloginCalls != 0 {
+		t.Fatalf("relogin occurred before threshold: %d", s.reloginCalls)
+	}
+	if _, err := b.Devices(); err != nil {
+		t.Fatal(err)
+	}
+	if s.reloginCalls != 1 {
+		t.Fatalf("relogin calls=%d", s.reloginCalls)
+	}
+}
+
+func TestBackendSuccessfulRequestResetsTimeoutCount(t *testing.T) {
+	b, s := backendFixture()
+	timeout := fmt.Errorf("TCC stalled: %w", context.DeadlineExceeded)
+	s.zoneErrors = []error{timeout}
+	if _, err := b.Devices(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal(err)
+	}
+	if _, err := b.Devices(); err != nil {
+		t.Fatal(err)
+	}
+	s.zoneErrors = []error{timeout, timeout}
+	for range 2 {
+		if _, err := b.Devices(); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatal(err)
+		}
+	}
+	if s.reloginCalls != 0 {
+		t.Fatalf("relogin calls=%d", s.reloginCalls)
+	}
+}
+
+func TestBackendPeriodicRelogin(t *testing.T) {
+	b, s := backendFixture()
+	s.reloginNotify = make(chan struct{}, 1)
+	done := make(chan struct{})
+	go b.reloginEvery(time.Millisecond, done)
+	select {
+	case <-s.reloginNotify:
+	case <-time.After(time.Second):
+		close(done)
+		t.Fatal("periodic relogin did not run")
+	}
+	close(done)
+}
+
 type fakeSession struct {
-	zoneCalls    int
-	infoCalls    int
-	reloginCalls int
-	zones        []Zone
-	infos        map[ZoneID]*ZoneInfo
-	zoneErrors   []error
-	infoErrors   []error
-	submitErrors []error
-	reloginErr   error
-	lastID       ZoneID
-	lastChange   ControlChanges
+	zoneCalls     int
+	infoCalls     int
+	reloginCalls  int
+	zones         []Zone
+	infos         map[ZoneID]*ZoneInfo
+	zoneErrors    []error
+	infoErrors    []error
+	submitErrors  []error
+	reloginErr    error
+	reloginNotify chan struct{}
+	lastID        ZoneID
+	lastChange    ControlChanges
 }
 
 func (f *fakeSession) Zones() ([]Zone, error) {
@@ -236,5 +293,11 @@ func (f *fakeSession) SubmitControlChanges(id ZoneID, changes ControlChanges) er
 
 func (f *fakeSession) Relogin(username, password string) error {
 	f.reloginCalls++
+	if f.reloginNotify != nil {
+		select {
+		case f.reloginNotify <- struct{}{}:
+		default:
+		}
+	}
 	return f.reloginErr
 }
